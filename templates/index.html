@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multilingual Document Search</title>
+<style>
+  :root{--c:#0f766e;--bg:#f4f6f8;--card:#fff;--line:#dfe3e8;--mut:#667085}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:#1d2939;
+    font:15px/1.5 system-ui,"Noto Sans Kannada","Noto Sans Devanagari","Nirmala UI","Segoe UI",sans-serif}
+  header{background:var(--c);color:#fff;padding:18px 24px}
+  header h1{margin:0;font-size:20px} header p{margin:2px 0 0;opacity:.85;font-size:13px}
+  main{max-width:1100px;margin:20px auto;padding:0 16px;display:grid;grid-template-columns:340px 1fr;gap:18px}
+  @media(max-width:860px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+  h2{margin:0 0 10px;font-size:15px}
+  label{display:block;font-size:13px;color:var(--mut);margin:10px 0 3px}
+  input[type=text],input[type=search]{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:7px;font:inherit}
+  button{background:var(--c);color:#fff;border:0;border-radius:7px;padding:9px 14px;font:inherit;cursor:pointer}
+  button.ghost{background:none;color:var(--c);padding:2px 6px}
+  button:disabled{opacity:.5;cursor:wait}
+  .badge{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e6f4f1;color:var(--c);margin:2px 4px 2px 0}
+  .warn{background:#fff4e5;color:#9a5b00}
+  .doc{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+  .doc small{color:var(--mut)}
+  .hit{padding:12px 0;border-top:1px solid var(--line)}
+  .hit:first-child{border-top:0}
+  .meta{font-size:12px;color:var(--mut);margin-bottom:3px}
+  mark{background:#fde68a;padding:0 1px;border-radius:2px}
+  pre{white-space:pre-wrap;font:inherit;background:#f8fafc;border:1px solid var(--line);border-radius:7px;padding:10px;max-height:260px;overflow:auto}
+  .row{display:flex;gap:8px}
+</style>
+</head>
+<body>
+<header><h1>Multilingual Document OCR + Semantic Search</h1>
+<p>Upload scanned pages in Kannada, English or Hindi, then search their text.</p></header>
+<main>
+  <section>
+    <div class="card">
+      <h2>1. Upload scanned pages</h2>
+      <input type="file" id="files" multiple accept=".png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.pdf">
+      <label>OCR languages (Tesseract codes)</label>
+      <input type="text" id="langs" value="kan+eng+hin">
+      <label style="display:flex;gap:7px;align-items:center;color:inherit">
+        <input type="checkbox" id="enhance"> Old / faded / noisy scan: enhance image first</label>
+      <p style="margin:12px 0 0"><button id="up">Extract text &amp; index</button></p>
+      <div id="upmsg" class="meta" style="margin-top:8px"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Documents</h2><div id="docs" class="meta">None yet.</div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>System</h2><div id="status" class="meta">...</div></div>
+  </section>
+  <section>
+    <div class="card">
+      <h2>2. Search</h2>
+      <div class="row"><input type="search" id="q" placeholder="Type a question or keywords in any supported language">
+      <button id="go">Search</button></div>
+      <div id="results" style="margin-top:8px"></div>
+    </div>
+    <div class="card" id="viewer" style="margin-top:16px;display:none">
+      <h2 id="vtitle">Extracted text</h2><div id="vbody"></div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function highlight(el, text, query){
+  // Skip very short words and never end a match before a combining mark (matra/virama),
+  // so Indic letter clusters are never cut in the middle.
+  const toks = query.split(/\s+/).filter(t => t.length > 2).map(esc);
+  if(!toks.length){ el.textContent = text; return; }
+  const re = new RegExp("(" + toks.join("|") + ")(?!\\p{M})", "giu");
+  text.split(re).forEach((part, i) => {
+    if(i % 2){ const m = document.createElement("mark"); m.textContent = part; el.appendChild(m); }
+    else el.appendChild(document.createTextNode(part));
+  });
+}
+function badge(t, warn){ const s = document.createElement("span"); s.className = "badge" + (warn ? " warn" : ""); s.textContent = t; return s; }
+
+async function refresh(){
+  const s = await (await fetch("/api/status")).json();
+  const st = $("status"); st.replaceChildren();
+  const se = s.search;
+  st.appendChild(badge(se.mode === "dense" ? "Embeddings" + (se.faiss ? " + FAISS" : " (numpy)") : "Char n-gram fallback", se.mode !== "dense"));
+  if(se.model) st.appendChild(badge(se.model));
+  st.appendChild(badge(se.chunks + " passages"));
+  if(s.ocr_error) st.appendChild(badge("OCR: " + s.ocr_error, true));
+  else { st.appendChild(badge("OCR: " + s.ocr_langs)); s.ocr_missing.forEach(m => st.appendChild(badge("missing OCR language: " + m, true))); }
+  if(se.mode !== "dense"){ const n = document.createElement("div"); n.style.marginTop = "6px";
+    n.textContent = "Fallback mode finds matches within the same language only. Install the ML requirements for cross-language search."; st.appendChild(n); }
+  const d = $("docs"); d.replaceChildren();
+  if(!s.docs.length){ d.textContent = "None yet."; return; }
+  s.docs.forEach(x => {
+    const r = document.createElement("div"); r.className = "doc";
+    const l = document.createElement("div"); l.textContent = x.name; const sm = document.createElement("small");
+    sm.textContent = ` ${x.pages} page(s), OCR confidence ${x.confidence}%`; l.appendChild(document.createElement("br")); l.appendChild(sm);
+    const b = document.createElement("div");
+    const v = document.createElement("button"); v.className = "ghost"; v.textContent = "view"; v.onclick = () => view(x.id);
+    const del = document.createElement("button"); del.className = "ghost"; del.textContent = "delete";
+    del.onclick = async () => { await fetch("/api/docs/" + x.id, {method: "DELETE"}); $("viewer").style.display = "none"; refresh(); };
+    b.append(v, del); r.append(l, b); d.appendChild(r);
+  });
+}
+async function view(id){
+  const d = await (await fetch("/api/docs/" + id)).json();
+  $("vtitle").textContent = "Extracted text: " + d.name;
+  const body = $("vbody"); body.replaceChildren();
+  d.pages.forEach(p => { const m = document.createElement("div"); m.className = "meta";
+    m.textContent = `Page ${p.page} (${p.method}, confidence ${p.confidence}%)`;
+    const pre = document.createElement("pre"); pre.textContent = p.text || "(no text found)"; body.append(m, pre); });
+  $("viewer").style.display = "block"; $("viewer").scrollIntoView({behavior: "smooth"});
+}
+$("up").onclick = async () => {
+  const fs = $("files").files; if(!fs.length){ $("upmsg").textContent = "Choose at least one file."; return; }
+  const fd = new FormData(); [...fs].forEach(f => fd.append("files", f));
+  fd.append("langs", $("langs").value); fd.append("enhance", $("enhance").checked);
+  $("up").disabled = true; $("upmsg").textContent = "Running OCR... this can take a while for many pages.";
+  try{
+    const r = await fetch("/api/upload", {method: "POST", body: fd}); const j = await r.json();
+    $("upmsg").textContent = j.error ? j.error : `Added ${j.added.length} document(s). ` + (j.errors.length ? "Problems: " + j.errors.join("; ") : "");
+  }catch(e){ $("upmsg").textContent = "Upload failed: " + e; }
+  $("up").disabled = false; refresh();
+};
+async function search(){
+  const q = $("q").value.trim(); if(!q) return;
+  const j = await (await fetch("/api/search?k=6&q=" + encodeURIComponent(q))).json();
+  const out = $("results"); out.replaceChildren();
+  if(!j.results.length){ out.textContent = "No matching passages found."; return; }
+  j.results.forEach(h => {
+    const d = document.createElement("div"); d.className = "hit";
+    const m = document.createElement("div"); m.className = "meta"; m.textContent = `${h.doc}, page ${h.page}, score ${h.score}`;
+    const t = document.createElement("div"); highlight(t, h.text, q); d.append(m, t); out.appendChild(d);
+  });
+}
+$("go").onclick = search; $("q").addEventListener("keydown", e => { if(e.key === "Enter") search(); });
+refresh();
+</script>
+</body>
+</html>

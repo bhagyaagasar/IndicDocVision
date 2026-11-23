@@ -1,0 +1,8 @@
+flask>=3.0
+numpy>=1.26
+scikit-learn>=1.4
+pytesseract>=0.3.10
+pdf2image>=1.17
+pypdf>=4.0
+opencv-python-headless>=4.9
+Pillow>=10.0
